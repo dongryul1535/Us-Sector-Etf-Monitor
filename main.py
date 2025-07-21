@@ -4,7 +4,7 @@ US Sector ETF Monitor – Golden / Dead Cross on Composite Lines
 ────────────────────────────────────────────────────────────────────
 📌 **매수·매도 규칙**
 - **Composite K** = MACD(12,26) + Slow %K(14,3)
-- **Composite D** = MACD(12,26) + Slow %D(14,3)
+- **Composite D** = MACD Signal + Slow %D(14,3)
 - **Golden Cross** (Composite K ↑ Composite D)  → **BUY**
 - **Dead Cross**   (Composite K ↓ Composite D)  → **SELL**
 
@@ -31,7 +31,7 @@ import os
 import sys
 import logging
 import datetime as dt
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import pandas as pd
 import requests
@@ -48,21 +48,17 @@ import matplotlib.font_manager as fm
 # 한글 폰트 설정 (환경변수 FONT_PATH로 .ttf 경로 지정)
 FONT_PATH = os.getenv("FONT_PATH", "")
 if FONT_PATH and os.path.exists(FONT_PATH):
-    fm.fontManager.addfont(FONT_PATH)  # 폰트 매니저에 추가
+    fm.fontManager.addfont(FONT_PATH)
     font_prop = fm.FontProperties(fname=FONT_PATH)
     plt.rcParams['font.family'] = font_prop.get_name()
     plt.rcParams['axes.unicode_minus'] = False
 else:
-    font_prop = None  # 한글 사용 시 fontproperties=font_prop 로 전달
-    # 주의: 한글 폰트 미설정 시 깨질 수 있음  # 한글 사용 시 fontproperties=font_prop 로 전달
-    # 주의: 한글 폰트 미설정 시 깨질 수 있음
+    font_prop = None
 
 # ───── 환경 변수 ───── #
 TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-# 기본 11개 S&P 500 섹터 ETF
 DEFAULT_ETFS = ["XLB","XLE","XLF","XLI","XLK","XLP","XLRE","XLU","XLV","XLY","XLC"]
-# 한글명 매핑 (SPDR 섹터 ETF)
 ETF_KR = {
     "XLB":"SPDR 소재 섹터 ETF",
     "XLE":"SPDR 에너지 섹터 ETF",
@@ -77,7 +73,6 @@ ETF_KR = {
     "XLC":"SPDR 커뮤니케이션 섹터 ETF"
 }
 ETFS = [s.strip().upper() for s in os.getenv("ETF_LIST", ",".join(DEFAULT_ETFS)).split(",") if s.strip()]
-# 실행 옵션
 SCALE_MACD = os.getenv("SCALE_MACD", "false").lower() == "true"
 SAVE_CSV   = os.getenv("SAVE_CSV",   "false").lower() == "true"
 
@@ -86,41 +81,42 @@ if not (TOKEN and CHAT_ID and ETFS):
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# ───── 지표 계산 ───── #
+# ───── 유틸 함수 ───── #
 
-def latest(s: pd.Series, n: int = 1):
+def latest(s: pd.Series, n: int = 1) -> Optional[float]:
     """n=1 → 마지막 값, n=2 → 마지막‑1 값"""
     if len(s) < n:
         return None
     return float(s.iloc[-n])
 
+# ───── 지표 계산 ───── #
 
 def add_composites(df: pd.DataFrame) -> pd.DataFrame:
-    """MACDㆍStoch 계산 후 Composite K, D 컬럼 추가"""
-    macd   = MACD(df["Close"], window_slow=26, window_fast=12, window_sign=9)
-    stoch  = StochasticOscillator(df["Close"], df["High"], df["Low"], window=14, smooth_window=3)
+    """MACDㆍStoch 계산 후 Composite K, D 컬럼 추가 (Composite D = MACD Signal + Slow %D)"""
+    macd = MACD(df["Close"], window_slow=26, window_fast=12, window_sign=9)
+    stoch = StochasticOscillator(df["Close"], df["High"], df["Low"], window=14, smooth_window=3)
 
-    df["MACD"]      = macd.macd()
-    df["MACD_SIG"]  = macd.macd_signal()
-    df["SlowK"]     = stoch.stoch()          # Slow %K (3일 smoothing)
-    df["SlowD"]     = stoch.stoch_signal()   # Slow %D (3일 MA of K)
+    df["MACD"]     = macd.macd()
+    df["MACD_SIG"] = macd.macd_signal()
+    df["SlowK"]    = stoch.stoch()
+    df["SlowD"]    = stoch.stoch_signal()
 
-    # 필요 시 MACD를 0‑100 범위로 정규화해 Stoch와 동일 스케일 맞춤
-    macd_scaled = df["MACD"]
+    macd_line = df["MACD"]
+    macd_sig  = df["MACD_SIG"]
     if SCALE_MACD:
-        min_m, max_m = macd_scaled.min(), macd_scaled.max()
-        macd_scaled  = 100 * (macd_scaled - min_m) / (max_m - min_m)
+        min_m, max_m = macd_line.min(), macd_line.max()
+        macd_line = 100 * (macd_line - min_m) / (max_m - min_m)
+        macd_sig  = 100 * (macd_sig  - min_m) / (max_m - min_m)
 
-    df["CompK"] = macd_scaled + df["SlowK"]
-    df["CompD"] = macd_scaled + df["SlowD"]
-    df["Diff"]  = df["CompK"] - df["CompD"]  # 교차 판별용
+    df["CompK"] = macd_line + df["SlowK"]
+    df["CompD"] = macd_sig  + df["SlowD"]
+    df["Diff"]  = df["CompK"] - df["CompD"]
     return df
-
 
 # ───── 시그널 판정 ───── #
 
 def detect_cross(df: pd.DataFrame) -> Optional[str]:
-    """골든·데드 크로스 판별 (최근 1일 기준)"""
+    """골든·데드 크로스 판별"""
     if len(df) < 2 or pd.isna(df["Diff"].iloc[-1]) or pd.isna(df["Diff"].iloc[-2]):
         return None
     prev, curr = df["Diff"].iloc[-2], df["Diff"].iloc[-1]
@@ -130,11 +126,9 @@ def detect_cross(df: pd.DataFrame) -> Optional[str]:
         return "SELL"
     return None
 
-
 # ───── 데이터 로드 ───── #
 
 def fetch_daily(tk: str, days: int = 120) -> Optional[pd.DataFrame]:
-    """FinanceDataReader로 과거 데이터 조회, 'Date' 컬럼 포함 반환"""
     end, start = dt.datetime.now(), dt.datetime.now() - dt.timedelta(days=days)
     try:
         df = fdr.DataReader(tk, start, end)
@@ -142,11 +136,9 @@ def fetch_daily(tk: str, days: int = 120) -> Optional[pd.DataFrame]:
             logging.warning(f"{tk}: 데이터 없음")
             return None
         df = df.reset_index()
-        # reset_index 시 index 이름이 없으면 'index'가 컬럼명으로 들어오므로 'Date'로 변경
         first_col = df.columns[0]
         if first_col.lower() in ('index', ''):
             df.rename(columns={first_col: 'Date'}, inplace=True)
-        # 그 외에도 'date'면 'Date'로 통일
         if 'date' in df.columns and 'Date' not in df.columns:
             df.rename(columns={'date': 'Date'}, inplace=True)
         return df
@@ -158,19 +150,15 @@ def fetch_daily(tk: str, days: int = 120) -> Optional[pd.DataFrame]:
 
 def make_chart(df: pd.DataFrame, tk: str) -> str:
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True, gridspec_kw={'height_ratios':[3,1]})
-
-    # 가격 + 이동평균선 20일
     ax1.plot(df["Date"], df["Close"], label="Close", linewidth=1.2)
     ax1.plot(df["Date"], df["Close"].rolling(20).mean(), linestyle="--", linewidth=0.8, label="MA20")
-    title_name = f"{tk} ({ETF_KR.get(tk, tk)})"
-    ax1.set_title(f"{title_name} Price", fontproperties=font_prop)
+    ax1.set_title(f"{tk} ({ETF_KR.get(tk, tk)}) Price", fontproperties=font_prop)
     ax1.grid(True, linestyle=":", linewidth=0.4)
     ax1.legend(loc="upper left", prop=font_prop)
 
-    # Composite K & D
     ax2.plot(df["Date"], df["CompK"], label="Composite K", linewidth=1.2)
     ax2.plot(df["Date"], df["CompD"], label="Composite D", linewidth=1.2)
-    ax2.axhline(0, color="black", linewidth=0.5)
+    ax2.axhline(0, linewidth=0.5)
     ax2.set_title("Composite Lines (MACD+Slow%K / D)", fontproperties=font_prop)
     ax2.grid(True, linestyle=":", linewidth=0.4)
     ax2.legend(loc="upper left", prop=font_prop)
@@ -184,7 +172,6 @@ def make_chart(df: pd.DataFrame, tk: str) -> str:
     plt.close(fig)
     return path
 
-
 # ───── Telegram ───── #
 
 def tg_text(msg: str):
@@ -192,12 +179,10 @@ def tg_text(msg: str):
     for chunk in [msg[i:i+3500] for i in range(0, len(msg), 3500)]:
         requests.post(url, json={"chat_id": CHAT_ID, "text": chunk}, timeout=10)
 
-
 def tg_photo(path: str, caption: str = ""):
     url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
     with open(path, "rb") as img:
         requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"photo": img}, timeout=20)
-
 
 # ───── 메인 ───── #
 
@@ -210,7 +195,6 @@ def main():
         df = add_composites(df)
         signal = detect_cross(df)
 
-        # 캡션 및 텍스트 알림 준비
         caption = f"{tk}: CompK={latest(df['CompK']):.2f}  CompD={latest(df['CompD']):.2f}"
         if signal:
             caption = f"{tk}: **{signal}**\n" + caption
@@ -226,7 +210,6 @@ def main():
         tg_text("\n".join(alerts))
     else:
         tg_text("크로스 신호 없음 – No crossover detected.")
-
 
 if __name__ == "__main__":
     main()
