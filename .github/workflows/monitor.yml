@@ -30,5 +30,6 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          ETF_LIST: ${{ secrets.ETF_LIST }}
+          ETF_LIST:           ${{ secrets.ETF_LIST }}
+          FONT_PATH: fonts/NanumGothic.ttf
         run: python main.py
