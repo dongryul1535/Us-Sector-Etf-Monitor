@@ -105,6 +105,7 @@ def detect_cross(df: pd.DataFrame) -> Optional[str]:
 # ───── 데이터 로드 ───── #
 
 def fetch_daily(tk: str, days: int = 120) -> Optional[pd.DataFrame]:
+    """FinanceDataReader로 과거 데이터 조회, 'Date' 컬럼 포함 반환"""
     end, start = dt.datetime.now(), dt.datetime.now() - dt.timedelta(days=days)
     try:
         df = fdr.DataReader(tk, start, end)
@@ -112,12 +113,17 @@ def fetch_daily(tk: str, days: int = 120) -> Optional[pd.DataFrame]:
             logging.warning(f"{tk}: 데이터 없음")
             return None
         df = df.reset_index()
-        df.columns = [c.capitalize() for c in df.columns]
+        # reset_index 시 index 이름이 없으면 'index'가 컬럼명으로 들어오므로 'Date'로 변경
+        first_col = df.columns[0]
+        if first_col.lower() in ('index', ''):
+            df.rename(columns={first_col: 'Date'}, inplace=True)
+        # 그 외에도 'date'면 'Date'로 통일
+        if 'date' in df.columns and 'Date' not in df.columns:
+            df.rename(columns={'date': 'Date'}, inplace=True)
         return df
     except Exception as e:
         logging.error(f"{tk}: 조회 실패 - {e}")
         return None
-
 
 # ───── 차트 ───── #
 
