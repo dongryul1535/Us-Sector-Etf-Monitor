@@ -1,0 +1,4 @@
+pandas>=1.5.3
+requests>=2.28.2
+FinanceDataReader>=0.9.59
+ta>=0.10.2
