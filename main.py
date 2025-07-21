@@ -47,8 +47,24 @@ from matplotlib.dates import DateFormatter
 # ───── 환경 변수 ───── #
 TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# 기본 11개 S&P 500 섹터 ETF
 DEFAULT_ETFS = ["XLB","XLE","XLF","XLI","XLK","XLP","XLRE","XLU","XLV","XLY","XLC"]
+# 한글명 매핑 (SPDR 섹터 ETF)
+ETF_KR = {
+    "XLB":"SPDR 소재 섹터 ETF",
+    "XLE":"SPDR 에너지 섹터 ETF",
+    "XLF":"SPDR 금융 섹터 ETF",
+    "XLI":"SPDR 산업재 섹터 ETF",
+    "XLK":"SPDR 기술 섹터 ETF",
+    "XLP":"SPDR 필수소비재 섹터 ETF",
+    "XLRE":"SPDR 부동산 섹터 ETF",
+    "XLU":"SPDR 유틸리티 섹터 ETF",
+    "XLV":"SPDR 헬스케어 섹터 ETF",
+    "XLY":"SPDR 임의소비재 섹터 ETF",
+    "XLC":"SPDR 커뮤니케이션 섹터 ETF"
+}
 ETFS = [s.strip().upper() for s in os.getenv("ETF_LIST", ",".join(DEFAULT_ETFS)).split(",") if s.strip()]
+# 실행 옵션
 SCALE_MACD = os.getenv("SCALE_MACD", "false").lower() == "true"
 SAVE_CSV   = os.getenv("SAVE_CSV",   "false").lower() == "true"
 
@@ -133,7 +149,8 @@ def make_chart(df: pd.DataFrame, tk: str) -> str:
     # 가격 + 이동평균선 20일
     ax1.plot(df["Date"], df["Close"], label="Close", linewidth=1.2)
     ax1.plot(df["Date"], df["Close"].rolling(20).mean(), linestyle="--", linewidth=0.8, label="MA20")
-    ax1.set_title(f"{tk} Price")
+        title_name = f"{tk} ({ETF_KR.get(tk, tk)})"
+    ax1.set_title(f"{title_name} Price")
     ax1.grid(True, linestyle=":", linewidth=0.4)
     ax1.legend(loc="upper left")
 
