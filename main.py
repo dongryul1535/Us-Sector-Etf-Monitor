@@ -48,10 +48,13 @@ import matplotlib.font_manager as fm
 # 한글 폰트 설정 (환경변수 FONT_PATH로 .ttf 경로 지정)
 FONT_PATH = os.getenv("FONT_PATH", "")
 if FONT_PATH and os.path.exists(FONT_PATH):
+    fm.fontManager.addfont(FONT_PATH)  # 폰트 매니저에 추가
     font_prop = fm.FontProperties(fname=FONT_PATH)
     plt.rcParams['font.family'] = font_prop.get_name()
+    plt.rcParams['axes.unicode_minus'] = False
 else:
     font_prop = None  # 한글 사용 시 fontproperties=font_prop 로 전달
+    # 주의: 한글 폰트 미설정 시 깨질 수 있음  # 한글 사용 시 fontproperties=font_prop 로 전달
     # 주의: 한글 폰트 미설정 시 깨질 수 있음
 
 # ───── 환경 변수 ───── #
@@ -160,17 +163,17 @@ def make_chart(df: pd.DataFrame, tk: str) -> str:
     ax1.plot(df["Date"], df["Close"], label="Close", linewidth=1.2)
     ax1.plot(df["Date"], df["Close"].rolling(20).mean(), linestyle="--", linewidth=0.8, label="MA20")
     title_name = f"{tk} ({ETF_KR.get(tk, tk)})"
-    ax1.set_title(f"{title_name} Price")
+    ax1.set_title(f"{title_name} Price", fontproperties=font_prop)
     ax1.grid(True, linestyle=":", linewidth=0.4)
-    ax1.legend(loc="upper left")
+    ax1.legend(loc="upper left", prop=font_prop)
 
     # Composite K & D
     ax2.plot(df["Date"], df["CompK"], label="Composite K", linewidth=1.2)
     ax2.plot(df["Date"], df["CompD"], label="Composite D", linewidth=1.2)
     ax2.axhline(0, color="black", linewidth=0.5)
-    ax2.set_title("Composite Lines (MACD+Slow%K / D)")
+    ax2.set_title("Composite Lines (MACD+Slow%K / D)", fontproperties=font_prop)
     ax2.grid(True, linestyle=":", linewidth=0.4)
-    ax2.legend(loc="upper left")
+    ax2.legend(loc="upper left", prop=font_prop)
 
     ax2.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
     fig.autofmt_xdate()
