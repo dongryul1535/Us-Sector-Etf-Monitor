@@ -1,17 +1,31 @@
 #!/usr/bin/env python3
 """
-US Major Sector ETF Monitor + Composite Indicator (MACD + Slow %D)
+US Sector ETF Monitor – Golden / Dead Cross on Composite Lines
 ────────────────────────────────────────────────────────────────────
-📌 **무엇이 달라졌나요?**
-- 기존 **MACD·Stochastic·Bollinger Bands** 신호 로직은 그대로 유지.
-- 추가로 **MACD + Slow %D**(Stochastic) 합성지표를 계산해 `df["MACD_SlowD"]` 컬럼에 저장합니다.
-  - ✔️ _MACD 라인_ 과 _Stochastic Slow %D(=Slow %K의 3일 평균)_ 을 단순 합산한 값입니다.
-  - 필요에 따라 `scale_macd=True` 옵션을 주면 MACD 값을 **0‑100 범위로 정규화** 후 합산하여 두 지표의 스케일을 맞출 수 있습니다.
-- Telegram 알림에는 여전히 매수·매도 신호만 전송하지만, `save_csv=True` 로 실행하면
-  최근 90일 데이터를 **CSV** 로 저장해 합성지표를 직접 차트로 시각화할 수 있습니다.
+📌 **매수·매도 규칙**
+- **Composite K** = MACD(12,26) + Slow %K(14,3)
+- **Composite D** = MACD(12,26) + Slow %D(14,3)
+- **Golden Cross** (Composite K ↑ Composite D)  → **BUY**
+- **Dead Cross**   (Composite K ↓ Composite D)  → **SELL**
 
-ETF(Exchange Traded Fund)는 주식처럼 거래소에서 매매되는 펀드 상품으로, 특정 지수나 섹터를 추종하여 분산투자 및 리스크 관리에 유용합니다.
-이 스크립트에서는 S&P 500 섹터 지수를 기반으로 구성된 11개 섹터 ETF를 기본으로 사용합니다.
+매 실행 시 마지막 두 일자의 교차여부를 판정해 신호가 발생하면 Telegram으로 **텍스트 + 차트 이미지**를 전송합니다.
+
+환경 변수
+-----------
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (필수)
+- `ETF_LIST="XLF,XLK"` 모니터링 대상 (없으면 11개 섹터 ETF 기본)
+- `SCALE_MACD=true` → 0‑100 정규화 후 합산 (Stoch와 스케일 맞춤)
+- `SAVE_CSV=true`   → CSV 저장
+
+requirements.txt (추가 패키지 포함)
+-----------------------------------
+```
+pandas>=1.5.3
+requests>=2.28.2
+finance-datareader>=0.9.59
+ta>=0.10.2
+matplotlib>=3.8.4
+```
 """
 import os
 import sys
@@ -24,91 +38,129 @@ import requests
 import FinanceDataReader as fdr
 from ta.trend import MACD
 from ta.momentum import StochasticOscillator
-from ta.volatility import BollingerBands
 
-# ───── 0. 환경 변수 ───── #
+import matplotlib
+matplotlib.use("Agg")  # 서버·CI 환경용
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+
+# ───── 환경 변수 ───── #
 TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-# 환경변수 ETF_LIST="XLF,XLK" 형태로 지정 가능
-DEFAULT_ETFS = [
-    "XLB","XLE","XLF","XLI","XLK",
-    "XLP","XLRE","XLU","XLV","XLY","XLC"
-]
+DEFAULT_ETFS = ["XLB","XLE","XLF","XLI","XLK","XLP","XLRE","XLU","XLV","XLY","XLC"]
 ETFS = [s.strip().upper() for s in os.getenv("ETF_LIST", ",".join(DEFAULT_ETFS)).split(",") if s.strip()]
-
-# 실행 옵션: CSV 저장 여부·MACD 스케일링 여부를 환경변수로 제어
-SAVE_CSV     = os.getenv("SAVE_CSV", "false").lower() == "true"
-SCALE_MACD   = os.getenv("SCALE_MACD", "false").lower() == "true"
+SCALE_MACD = os.getenv("SCALE_MACD", "false").lower() == "true"
+SAVE_CSV   = os.getenv("SAVE_CSV",   "false").lower() == "true"
 
 if not (TOKEN and CHAT_ID and ETFS):
     sys.exit("필수 환경변수 누락: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, ETF_LIST")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# ───── 헬퍼 함수 ───── #
+# ───── 지표 계산 ───── #
 
-def latest(series: pd.Series) -> Optional[float]:
-    val = series.iloc[-1]
-    return None if pd.isna(val) else float(val)
+def latest(s: pd.Series, n: int = 1):
+    """n=1 → 마지막 값, n=2 → 마지막‑1 값"""
+    if len(s) < n:
+        return None
+    return float(s.iloc[-n])
 
 
-def add_indicators(df: pd.DataFrame, scale_macd: bool = False) -> pd.DataFrame:
-    """MACD, Stochastic Slow %D, Bollinger, Composite(MACD+Slow D) 추가"""
-    macd = MACD(df["Close"], window_slow=26, window_fast=12, window_sign=9)
-    st   = StochasticOscillator(df["Close"], df["High"], df["Low"], window=14, smooth_window=3)
-    bb   = BollingerBands(df["Close"], window=20, window_dev=2)
+def add_composites(df: pd.DataFrame) -> pd.DataFrame:
+    """MACDㆍStoch 계산 후 Composite K, D 컬럼 추가"""
+    macd   = MACD(df["Close"], window_slow=26, window_fast=12, window_sign=9)
+    stoch  = StochasticOscillator(df["Close"], df["High"], df["Low"], window=14, smooth_window=3)
 
     df["MACD"]      = macd.macd()
     df["MACD_SIG"]  = macd.macd_signal()
-    df["SlowD"]     = st.stoch_signal()
-    df["BB_UP"]     = bb.bollinger_hband()
-    df["BB_LW"]     = bb.bollinger_lband()
+    df["SlowK"]     = stoch.stoch()          # Slow %K (3일 smoothing)
+    df["SlowD"]     = stoch.stoch_signal()   # Slow %D (3일 MA of K)
 
+    # 필요 시 MACD를 0‑100 범위로 정규화해 Stoch와 동일 스케일 맞춤
     macd_scaled = df["MACD"]
-    if scale_macd:
-        # 0‒100 정규화 → Stoch와 스케일 맞춤
+    if SCALE_MACD:
         min_m, max_m = macd_scaled.min(), macd_scaled.max()
         macd_scaled  = 100 * (macd_scaled - min_m) / (max_m - min_m)
 
-    df["MACD_SlowD"] = macd_scaled + df["SlowD"]
+    df["CompK"] = macd_scaled + df["SlowK"]
+    df["CompD"] = macd_scaled + df["SlowD"]
+    df["Diff"]  = df["CompK"] - df["CompD"]  # 교차 판별용
     return df
 
 
-def signal(df: pd.DataFrame) -> Tuple[Optional[str], int]:
-    """기존 점수 로직(MACD·Stoch·BB 5:4:1)"""
-    m = 1 if latest(df["MACD"])     > latest(df["MACD_SIG"]) else -1
-    s = 1 if latest(df["SlowD"])    > 50                    else -1  # Slow D 50선 기준
-    c = latest(df["Close"])
-    b = 1 if c < latest(df["BB_LW"]) else -1 if c > latest(df["BB_UP"]) else 0
-    score = 5*m + 4*s + b
-    if score >= 7:  return "BUY", score
-    if score <= -7: return "SELL", score
-    return None, score
+# ───── 시그널 판정 ───── #
+
+def detect_cross(df: pd.DataFrame) -> Optional[str]:
+    """골든·데드 크로스 판별 (최근 1일 기준)"""
+    if len(df) < 2 or pd.isna(df["Diff"].iloc[-1]) or pd.isna(df["Diff"].iloc[-2]):
+        return None
+    prev, curr = df["Diff"].iloc[-2], df["Diff"].iloc[-1]
+    if prev <= 0 and curr > 0:
+        return "BUY"
+    if prev >= 0 and curr < 0:
+        return "SELL"
+    return None
 
 
-# ───── 가격 데이터 조회 ───── #
+# ───── 데이터 로드 ───── #
 
-def fetch_daily(ticker: str, days: int = 90) -> Optional[pd.DataFrame]:
+def fetch_daily(tk: str, days: int = 120) -> Optional[pd.DataFrame]:
     end, start = dt.datetime.now(), dt.datetime.now() - dt.timedelta(days=days)
     try:
-        df = fdr.DataReader(ticker, start, end)
-        if df.empty or len(df) < days * 0.5:
-            logging.warning(f"{ticker}: 데이터 부족({len(df)})")
+        df = fdr.DataReader(tk, start, end)
+        if df.empty:
+            logging.warning(f"{tk}: 데이터 없음")
             return None
         df = df.reset_index()
-        df.columns = [c.capitalize() for c in df.columns]  # Date, Open, High...
+        df.columns = [c.capitalize() for c in df.columns]
         return df
     except Exception as e:
-        logging.error(f"{ticker}: 조회 실패 - {e}")
+        logging.error(f"{tk}: 조회 실패 - {e}")
         return None
 
 
-# ───── Telegram 알림 ───── #
+# ───── 차트 ───── #
 
-def tg(msg: str):
+def make_chart(df: pd.DataFrame, tk: str) -> str:
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True, gridspec_kw={'height_ratios':[3,1]})
+
+    # 가격 + 이동평균선 20일
+    ax1.plot(df["Date"], df["Close"], label="Close", linewidth=1.2)
+    ax1.plot(df["Date"], df["Close"].rolling(20).mean(), linestyle="--", linewidth=0.8, label="MA20")
+    ax1.set_title(f"{tk} Price")
+    ax1.grid(True, linestyle=":", linewidth=0.4)
+    ax1.legend(loc="upper left")
+
+    # Composite K & D
+    ax2.plot(df["Date"], df["CompK"], label="Composite K", linewidth=1.2)
+    ax2.plot(df["Date"], df["CompD"], label="Composite D", linewidth=1.2)
+    ax2.axhline(0, color="black", linewidth=0.5)
+    ax2.set_title("Composite Lines (MACD+Slow%K / D)")
+    ax2.grid(True, linestyle=":", linewidth=0.4)
+    ax2.legend(loc="upper left")
+
+    ax2.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
+    fig.autofmt_xdate()
+    fig.tight_layout()
+
+    path = f"{tk}_comp_chart.png"
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    return path
+
+
+# ───── Telegram ───── #
+
+def tg_text(msg: str):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     for chunk in [msg[i:i+3500] for i in range(0, len(msg), 3500)]:
         requests.post(url, json={"chat_id": CHAT_ID, "text": chunk}, timeout=10)
+
+
+def tg_photo(path: str, caption: str = ""):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendPhoto"
+    with open(path, "rb") as img:
+        requests.post(url, data={"chat_id": CHAT_ID, "caption": caption}, files={"photo": img}, timeout=20)
 
 
 # ───── 메인 ───── #
@@ -117,21 +169,27 @@ def main():
     alerts: List[str] = []
     for tk in ETFS:
         df = fetch_daily(tk)
-        if df is None or len(df) < 40:
-            alerts.append(f"{tk}: 데이터 부족")
+        if df is None:
             continue
+        df = add_composites(df)
+        signal = detect_cross(df)
 
-        df = add_indicators(df, scale_macd=SCALE_MACD)
-        sig, score = signal(df)
-        if sig:
-            alerts.append(f"{tk}: **{sig}** (score {score:+d}) – MACD_SlowD {latest(df['MACD_SlowD']):.2f}")
+        # 캡션 및 텍스트 알림 준비
+        caption = f"{tk}: CompK={latest(df['CompK']):.2f}  CompD={latest(df['CompD']):.2f}"
+        if signal:
+            caption = f"{tk}: **{signal}**\n" + caption
+            alerts.append(caption.replace("**", ""))
+
+        img_path = make_chart(df.tail(120), tk)
+        tg_photo(img_path, caption=caption)
 
         if SAVE_CSV:
-            csv_name = f"{tk}_history.csv"
-            df.to_csv(csv_name, index=False)
-            logging.info(f"{csv_name} saved.")
+            df.to_csv(f"{tk}_history.csv", index=False)
 
-    tg("\n".join(alerts) if alerts else "No BUY/SELL signals detected.")
+    if alerts:
+        tg_text("\n".join(alerts))
+    else:
+        tg_text("크로스 신호 없음 – No crossover detected.")
 
 
 if __name__ == "__main__":
