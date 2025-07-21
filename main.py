@@ -149,7 +149,7 @@ def make_chart(df: pd.DataFrame, tk: str) -> str:
     # 가격 + 이동평균선 20일
     ax1.plot(df["Date"], df["Close"], label="Close", linewidth=1.2)
     ax1.plot(df["Date"], df["Close"].rolling(20).mean(), linestyle="--", linewidth=0.8, label="MA20")
-        title_name = f"{tk} ({ETF_KR.get(tk, tk)})"
+    title_name = f"{tk} ({ETF_KR.get(tk, tk)})"
     ax1.set_title(f"{title_name} Price")
     ax1.grid(True, linestyle=":", linewidth=0.4)
     ax1.legend(loc="upper left")
