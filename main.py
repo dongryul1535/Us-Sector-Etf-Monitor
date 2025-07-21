@@ -43,6 +43,16 @@ import matplotlib
 matplotlib.use("Agg")  # 서버·CI 환경용
 import matplotlib.pyplot as plt
 from matplotlib.dates import DateFormatter
+import matplotlib.font_manager as fm
+
+# 한글 폰트 설정 (환경변수 FONT_PATH로 .ttf 경로 지정)
+FONT_PATH = os.getenv("FONT_PATH", "")
+if FONT_PATH and os.path.exists(FONT_PATH):
+    font_prop = fm.FontProperties(fname=FONT_PATH)
+    plt.rcParams['font.family'] = font_prop.get_name()
+else:
+    font_prop = None  # 한글 사용 시 fontproperties=font_prop 로 전달
+    # 주의: 한글 폰트 미설정 시 깨질 수 있음
 
 # ───── 환경 변수 ───── #
 TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN")
