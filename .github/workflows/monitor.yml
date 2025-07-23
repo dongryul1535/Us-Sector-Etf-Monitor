@@ -3,9 +3,9 @@ name: US Sector ETF Monitor
 # 한국시간 평일 23:30, 다음 날 07:30에 자동 실행
 on:
   schedule:
-    # KST 23:30 → UTC 14:30 (월~금)
+    # KST 23:00 → UTC 14:00 (월~금)
     - cron: '30 14 * * 1-5'
-    # KST 07:30 → UTC 22:30 전날 (일~목)
+    # KST 07:00 → UTC 22:00 전날 (일~목)
     - cron: '30 22 * * 0-4'
   workflow_dispatch:
 
